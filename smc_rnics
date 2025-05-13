@@ -7,7 +7,7 @@ VERSION="1.8.4";
 
 function usage() {
 	echo;
-	echo "Usage: smc_rnics [ OPTIONS ] [ FID ]";
+	echo "Usage: smc_rnics [ SID_OPTIONS ] [ FID ]";
 	echo;
 	echo "List RNICs";
 	echo;
@@ -22,12 +22,21 @@ function usage() {
 }
 
 function print_header() {
-	if [ $IBdev -eq 0 ]; then
-		printf "     FID  Power  PCI_ID        PCHID  Type           PPrt  PNET_ID            Net-Dev\n";
+	if [ $IBdev -eq 1 ] && [ $rawIDs -eq 1 ]; then
+		printf "FID   Power  PCI_ID        PCHID  Type             PFT   VFN  IPrt  PNET_ID            IB-Dev\n";
+		echo '---------------------------------------------------------------------------------------------------';
+
+	elif [ $IBdev -eq 1 ]; then
+		printf "FID   Power  PCI_ID        PCHID  Type             PFT   VF   IPrt  PNET_ID            IB-Dev\n";
+                echo '---------------------------------------------------------------------------------------------------';
+
+	elif [ $rawIDs -eq 1 ]; then
+		printf "FID   Power  PCI_ID        PCHID  Type             PFT   VFN  PPrt  PNET_ID            Net-Dev\n";
+		echo '---------------------------------------------------------------------------------------------------';
 	else
-		printf "     FID  Power  PCI_ID        PCHID  Type           IPrt  PNET_ID            IB-Dev\n";
+		printf "FID   Power  PCI_ID        PCHID  Type             PFT   VF   PPrt  PNET_ID            Net-Dev\n";
+		echo '----------------------------------------------------------------------------------------------------';
 	fi
-	echo '------------------------------------------------------------------------------------------';
 }
 
 function get_softset_pnet_id() {
@@ -78,7 +87,11 @@ function get_pnet_from_port() {
 }
 
 function print_rnic() {
-	printf "%8x  %-5s  %-12s  %-4s   %-14s %-4s  %-17s  %s\n" "$((16#$fid))" "$power" "$addr" "$pchid" "$dev_type" "$port" "`get_pnet_from_port`" "$int";
+	if [ $rawIDs -eq 1 ]; then
+		printf "%4x  %-5s  %-12s  %-4s   %-15s  %-4s  %-3s  %-4s  %-17s  %s\n" "$((16#$fid))" "$power" "$addr" "$pchid" "$dev_type" "$pft" "${vfn:+$((16#${vfn#0x}))}" "$port" "`get_pnet_from_port`" "$int";
+	else
+		printf "%4x  %-5s  %-12s  %-4s   %-15s  %-4s  %-3s  %-4s  %-17s  %s\n" "$((16#$fid))" "$power" "$addr" "$pchid" "$dev_type" "$pft" "$vfn" "$port" "`get_pnet_from_port`" "$int";
+	fi
 	(( printed++ ));
 }
 
@@ -98,6 +111,43 @@ function set_RoCE_dev_and_port() {
 	fi;
 }
 
+function set_RoCE_pft_and_vfn() {
+	local lid=$1
+	local lpft=$2
+	local lvfn=$3
+
+	case "$lpft" in
+		"0x02"|"0x0a"|"0x0c")
+			vfn="y" ;;
+		"0x05")
+			vfn="n/a" ;;
+		"0x0f")
+			if (( 16#${lvfn#0x} > 0 )); then
+				vfn="y"
+			else
+				vfn="n"
+			fi
+			;;
+		*)
+			vfn=$((16#${lvfn#0x}))
+			;;
+	esac
+
+	case "$lid" in
+		"0x1004") pft="ROCE" ;;
+		"0x1016") pft="ROC2" ;;
+		"0x101f") pft="NETD" ;;
+		"0x04ed") pft="ISM" ;;
+		"0x101e")
+			case "$lpft" in
+				"0x0a") pft="ROC3" ;;
+				"0x0c") pft="NETH" ;;
+				"0x0f") pft="NETD" ;;
+			esac
+			;;
+	esac
+}
+
 function set_by_firmware_lvl() {
 	local iface;
 	local name;
@@ -110,6 +160,8 @@ function set_by_firmware_lvl() {
 		lvl="`ethtool -i $iface | grep -e "^firmware-version:" | awk '{print($2)}'`";
 		if [ "${lvl%%.*}" == "22" ]; then
 			name="RoCE_Express3";
+		else
+			name="RoCE_Express2";
 		fi
 	fi
 	set_RoCE_dev_and_port $name;
@@ -133,6 +185,8 @@ function print_rnics() {
 			if [ $all -ne 0 ]; then
 				dev_type="";
 				pchid="";
+				pft="";
+				vfn="";
 				pnet="";
 				port="";
 				print_rnic;
@@ -155,24 +209,35 @@ function print_rnics() {
 		id=`cat device`;
 		vend=`cat vendor`;
 		dev_type="${vend#0x}:${id#0x}";
+		pft=`cat pft`
+		vfn=`cat vfn`;
 		if [ $rawIDs -eq 0 ]; then
+			#vfn="${vfn#0x}"
+			#vfn="${vfn#"${vfn%%[!0]*}"}";
+			#vfn="${vfn:-0}"
 			case "$vend" in
 			"0x1014" ) # IBM
 				case "$id" in
 				"0x04ed") dev_type="ISM";
-					  int="n/a";;
+					  int="n/a"
+					  set_RoCE_pft_and_vfn "$id" "$pft" "$vfn";;
 				*)
 					continue;
 				esac;;
 			"0x15b3" ) # Mellanox
-				case "$id" in
+				case "$pft" in
 				"0x1003" | \
-				"0x1004") dev_type="RoCE_Express";;
-				"0x1016") set_RoCE_dev_and_port "RoCE_Express2";;
-				"0x101e") set_by_firmware_lvl;;
-				*)	  set_RoCE_dev_and_port "Mlx_$id";;
+				"0x02") dev_type="RoCE_Express";
+					set_RoCE_pft_and_vfn "$id" "$pft" "$vfn";;
+				"0x0a") set_by_firmware_lvl;
+					set_RoCE_pft_and_vfn "$id" "$pft" "$vfn";;
+				"0x0c" | \
+				"0x0f") set_RoCE_dev_and_port "Network_Express";
+					set_RoCE_pft_and_vfn "$id" "$pft" "$vfn";;
+				*)      set_RoCE_dev_and_port "Mlx_$id";;
 				esac;;
-			*) [ $all -eq 0 ] && continue
+			*) vfn="n/a"
+			   [ $all -eq 0 ] && continue;;
 			esac
 		fi
 		pchid="`cat pchid | sed 's/^0x//'`";

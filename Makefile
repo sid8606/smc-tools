@@ -58,7 +58,7 @@ LIBDIR		= ${PREFIX}/lib
 endif
 endif
 
-all: libsmc-preload.so libsmc-preload32.so smcd smcr smcss smc_pnet
+all: libsmc-preload.so smcd smcr smcss smc_pnet
 
 CFLAGS ?= -Wall -O3 -g
 ifneq ($(shell sh -c 'command -v pkg-config'),)
@@ -90,21 +90,6 @@ smc-preload.o: smc-preload.c
 libsmc-preload.so: smc-preload.o
 	${LINK} ${ALL_LDFLAGS} -shared smc-preload.o -ldl -Wl,-z,defs,-soname,$@.$(VER_MAJOR) -o $@
 	chmod u+s $@
-
-libsmc-preload32.so: smc-preload.c
-ifeq ($(ARCH),64)
-ifeq ($(STUFF_32BIT),1)
-	${CCC} ${ALL_CFLAGS} -fPIC -c ${MACHINE_OPT32} $< -o smc-preload32.o
-	${LINK} ${ALL_LDFLAGS} -shared smc-preload32.o ${MACHINE_OPT32} -ldl -Wl,-soname,$@.$(VER_MAJOR) -o $@
-	chmod u+s $@
-else
-	$(warning "Warning: Skipping 31/32-bit library build because 31/32-bit build tools")
-	$(warning "         are unavailable. SMC will not support 31/32 bit applications")
-	$(warning "         unless the glibc devel package for the appropriate addressing")
-	$(warning "         mode is installed and the preload libraries are rebuilt.")
-endif
-endif
-
 
 %d.o: %.c smctools_common.h
 	${CCC} ${ALL_CFLAGS} -DSMCD -c $< -o $@
